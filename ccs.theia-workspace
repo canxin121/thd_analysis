@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "path": "file:///c%3A/Users/canxin.LAPTOP/workspace_ccstheia"
+    },
+    {
+      "path": "thd_analysis_mcu"
+    }
+  ],
+  "settings": {
+    "CCS.debug.breakpoint.showCore": true
+  }
+}
