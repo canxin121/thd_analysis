@@ -2,7 +2,7 @@
 
 ## Mcu 程序
 
-查阅 [McuReadme](thd_analysis_mcu\readme.md)
+查阅 [McuReadme](thd_analysis_mcu/readme.md)
 
 ## 控制软件
 
