@@ -8,7 +8,8 @@ void process_uart_command(uint8_t *packet, OperationMode *gCurrentMode,
                           SystemState *gSystemState, bool *gTriggerSampling) {
   // 检查包头和包尾
   if (packet[0] != UART_PACKET_HEAD || packet[7] != UART_PACKET_TAIL) {
-    return; // 头尾验证失败，直接返回
+    send_uart_response(0, RESP_ERROR, 0);
+    return;
   }
 
   // 解析命令
