@@ -1,0 +1,18 @@
+display_name: ThdAnalysis
+app_binary_name: thd_analysis
+
+icon: assets/icon.png
+
+keywords:
+  - Science 
+
+generic_name: thd_analysis
+
+actions: []
+
+categories:
+  - Science
+
+startup_notify: true
+
+include: []

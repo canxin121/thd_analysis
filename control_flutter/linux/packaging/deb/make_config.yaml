@@ -1,0 +1,29 @@
+display_name: ThdAnalysis
+
+package_name: thd-analysis
+
+maintainer:
+  name: canxin121
+  email: q1969730106@gmail.com
+
+installed_size: 6666
+
+priority: optional
+
+section: x11
+
+essential: false
+icon: assets/icon.png
+
+postinstall_scripts: []
+postuninstall_scripts: []
+
+keywords:
+  - Science
+
+generic_name: thd_analysis
+
+categories:
+  - Science
+
+startup_notify: true

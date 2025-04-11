@@ -1,0 +1,15 @@
+icon: assets/icon.png
+summary: ThdAnalysis
+group: Applaction/Science
+vendor: canxin121
+packager: canxin121
+packagerEmail: q1969730106@gmail.com
+license: MIT or Apache-2.0
+display_name: ThdAnalysis
+bin_name: thd_analysis
+keywords:
+  - Science
+generic_name: thd_analysis
+categories:
+  - Science
+startup_notify: true

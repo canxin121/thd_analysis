@@ -1,0 +1,241 @@
+name: Build All Packages
+on:
+  workflow_dispatch:
+
+jobs:
+  get_version:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.fetch_version.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Fetch Version
+        id: fetch_version
+        run: |
+          sudo snap install yq
+          app_version=$(yq eval '.version' control_flutter/pubspec.yaml)
+          echo "app_version=$app_version" >> $GITHUB_OUTPUT
+
+  build_android_apks:
+    name: Build and Push Android APKs
+    needs: get_version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "oracle"
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build APK
+        working-directory: ./control_flutter
+        run: flutter build apk --release
+
+      - name: Build APK (split per ABI)
+        working-directory: ./control_flutter
+        run: flutter build apk --release --split-per-abi
+
+      - name: Rename APKs
+        working-directory: ./control_flutter
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_unknown.apk
+          mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_armeabi-v7a.apk
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_arm64-v8a.apk
+          mv build/app/outputs/flutter-apk/app-x86_64-release.apk build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_x86_64.apk
+
+      - name: Upload APK (unknown)
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_android_unknown_${{ needs.get_version.outputs.app_version }}
+          path: control_flutter/build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_unknown.apk
+          compression-level: 9
+
+      - name: Upload APK (armeabi-v7a)
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_android_armeabi-v7a_${{ needs.get_version.outputs.app_version }}
+          path: control_flutter/build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_armeabi-v7a.apk
+          compression-level: 9
+
+      - name: Upload APK (arm64-v8a)
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_android_arm64-v8a_${{ needs.get_version.outputs.app_version }}
+          path: control_flutter/build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_arm64-v8a.apk
+          compression-level: 9
+
+      - name: Upload APK (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_android_x86_64_${{ needs.get_version.outputs.app_version }}
+          path: control_flutter/build/app/outputs/flutter-apk/thd_analysis_android_${{ needs.get_version.outputs.app_version }}_x86_64.apk
+          compression-level: 9
+
+  build_windows_setup_exe:
+    name: Build and Push Windows Packages
+    needs: get_version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Inno Setup 6
+        run: |-
+          tools/innosetup-6.3.3.exe /VERYSILENT
+
+        shell: pwsh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Distribute Packages
+        working-directory: ./control_flutter
+        run: |
+          dart pub global activate --source git https://github.com/canxin121/flutter_distributor --git-ref temp --git-path packages/flutter_distributor
+          flutter_distributor package --platform windows --targets exe
+        shell: pwsh
+
+      - name: Rename Packages
+        working-directory: ./control_flutter
+        run: |
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.exe ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64.exe
+
+      - name: Upload exe Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64_exe
+          path: control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64.exe
+          compression-level: 9
+
+  build_linux_packages:
+    name: Build and Push Linux Packages
+    needs: get_version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt install -y locate rpm patchelf libwebkit2gtk-4.1-dev
+          sudo apt-get install -y ninja-build libgtk-3-dev libfuse2 libasound2-dev
+
+          wget -O appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod a+x appimagetool
+          sudo mv appimagetool /usr/local/bin/
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Distribute Packages
+        working-directory: ./control_flutter
+        run: |
+          dart pub global activate --source git https://github.com/canxin121/flutter_distributor --git-ref temp --git-path packages/flutter_distributor
+          flutter_distributor package --platform linux --targets rpm,deb,appimage
+
+      - name: Rename Packages
+        working-directory: ./control_flutter
+        run: |
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.deb ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64.deb
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.rpm ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86_64.rpm
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.AppImage ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64.AppImage
+
+      - name: Upload deb Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64_deb
+          path: control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64.deb
+          compression-level: 9
+
+      - name: Upload rpm Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64_rpm
+          path: control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86_64.rpm
+          compression-level: 9
+
+      - name: Upload AppImage Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64_AppImage
+          path: control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_linux_${{ needs.get_version.outputs.app_version }}_x86-64.AppImage
+          compression-level: 9
+
+  build_macos_package:
+    name: Build and Push Macos Packages
+    needs: get_version
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 21
+
+      - name: Setup Depencies
+        run: |-
+          npm install -g appdmg
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install build dependencies (automake, libtool)
+        run: brew install automake libtool
+
+      - name: Package Dmg
+        working-directory: ./control_flutter
+        run: |-
+          dart pub global activate --source git https://github.com/canxin121/flutter_distributor --git-ref temp --git-path packages/flutter_distributor
+          flutter_distributor package --platform macos --target dmg
+
+      - name: Rename Dmg
+        working-directory: ./control_flutter
+        run: |
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.dmg ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}.dmg
+
+      - name: Upload AppImage Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}_dmg
+          path: ./control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}.dmg
+          compression-level: 9

@@ -1,0 +1,65 @@
+name: Build Windows Packages 
+on:
+  workflow_dispatch:
+    
+jobs:
+  get_version:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.fetch_version.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Fetch Version
+        id: fetch_version
+        run: |
+          sudo snap install yq
+          app_version=$(yq eval '.version' control_flutter/pubspec.yaml)
+          echo "app_version=$app_version" >> $GITHUB_OUTPUT
+          
+  build_and_push:
+    name: Build and Push Windows Packages 
+    needs: get_version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Inno Setup 6
+        run: |-
+          tools/innosetup-6.3.3.exe /VERYSILENT
+
+        shell: pwsh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+  
+      - name: Distribute Packages
+        working-directory: ./control_flutter
+        run: |
+          dart pub global activate --source git https://github.com/fastforgedev/fastforge --git-ref main --git-path packages/flutter_distributor
+          flutter_distributor package --platform windows --targets exe
+        shell: pwsh
+
+      - name: Rename Packages 
+        working-directory: ./control_flutter
+        run: |
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.exe ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64.exe
+
+      - name: Upload exe Package
+        uses: actions/upload-artifact@v4
+        with:
+            name: thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64_exe
+            path: control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_windows_${{ needs.get_version.outputs.app_version }}_x86-64.exe
+            compression-level: 9

@@ -1,0 +1,68 @@
+name: Build Macos Packages
+on:
+  workflow_dispatch:
+
+jobs:
+  get_version:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.fetch_version.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Fetch Version
+        id: fetch_version
+        run: |
+          sudo snap install yq
+          app_version=$(yq eval '.version' control_flutter/pubspec.yaml)
+          echo "app_version=$app_version" >> $GITHUB_OUTPUT
+
+  build_and_push:
+    name: Build and Push Macos Packages
+    needs: get_version
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 21
+
+      - name: Setup Depencies
+        run: |-
+          npm install -g appdmg
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install build dependencies (automake, libtool)
+        run: brew install automake libtool
+
+      - name: Package Dmg
+        working-directory: ./control_flutter
+        run: |-
+          dart pub global activate --source git https://github.com/fastforgedev/fastforge --git-ref main --git-path packages/flutter_distributor
+          flutter_distributor package --platform macos --target dmg
+      - name: Rename Dmg
+        working-directory: ./control_flutter
+        run: |
+          mv ./dist/${{ needs.get_version.outputs.app_version }}/*.dmg ./dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}.dmg
+
+      - name: Upload AppImage Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}_dmg
+          path: ./control_flutter/dist/${{ needs.get_version.outputs.app_version }}/thd_analysis_macos_unknown_${{ needs.get_version.outputs.app_version }}.dmg
+          compression-level: 9

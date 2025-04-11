@@ -1,0 +1,8 @@
+app_id: 4992df92-4e29-4786-c768-c1e85c92a311
+publisher: canxin121
+display_name: ThdAnalysis
+create_desktop_icon: true
+install_dir_name: thd_analysis
+script_template: inno_setup.iss
+locales:
+  - en
