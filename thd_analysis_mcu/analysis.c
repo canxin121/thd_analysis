@@ -13,8 +13,9 @@
 #define ADC_MIDPOINT 2048 // ADC 中点值 (12 位 ADC, u12)
 #define PRE_FFT_SCALE 16  // 预处理缩放因子 u12 -> u16 (4096 -> 65536)
 #define HARMONIC_SEARCH_WINDOW_HALF_WIDTH 2
-#define MIN_HARMONIC_THRESHOLD_Q15 100 // 示例值, 需要根据实际信号调整 (Q15)
+#define MIN_HARMONIC_THRESHOLD_Q15 100 // 需要根据实际信号调整 (Q15)
 #define FFT_MAG_SPECTRUM_VALID_LEN (SAMPLE_SIZE / 2 - 1)
+#define MIN_FUNDAMENTAL_IDX 3  // 基波索引最小值，小于此值视为直流信号
 
 // --- 内部辅助函数声明 ---
 uint32_t calc_signal_freq(uint32_t adcclks, int16_t fundamental_idx);
@@ -93,6 +94,21 @@ AnalysisResult analyze_harmonics(const uint16_t *adc_data) {
   if (!fundamental_found) {
     result.thd = -1.0f;              // 错误码：未找到有效基波
     result.waveform = WAVEFORM_NONE; // 明确标记为无波形
+    return result;
+  }
+  
+  // 判断是否为带噪声的直流信号（基波频率过低）
+  if (fundamental_idx < MIN_FUNDAMENTAL_IDX) {
+    result.thd = 0.0f;               // 直流信号的THD为0
+    result.waveform = WAVEFORM_DC;   // 标记为直流波形
+    result.harmonic_indices[0] = fundamental_idx;  // 保留基波索引作为记录
+    
+    // 将所有谐波分量设为0
+    for (int i = 0; i < NUM_HARMONICS; ++i) {
+      result.normalized_harmonics_amplitudes[i] = 0.0f;
+      if (i > 0) result.harmonic_indices[i] = 0;  // 二次及以上谐波索引置0
+    }
+    
     return result;
   }
 

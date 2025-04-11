@@ -1,14 +1,42 @@
 import 'package:flutter/material.dart';
-import '../controllers/serial_controller.dart';
 
 class SerialControlPanel extends StatelessWidget {
-  final SerialController controller;
+  final List<String> availablePorts;
+  final String? selectedPort;
+  final bool isConnected;
+  final bool isConnecting;
+  final bool autoTrigger;
+  final int triggerInterval;
+  final bool isLoading;
   final bool isLandscape;
+  final BuildContext context;
+
+  final VoidCallback onRefreshPorts;
+  final Function(String?) onSetSelectedPort;
+  final VoidCallback onToggleConnection;
+  final VoidCallback onToggleAutoTrigger;
+  final VoidCallback onTriggerSample;
+  final Function(int) onSetTriggerInterval;
+  final VoidCallback onShowConfig;
 
   const SerialControlPanel({
     super.key,
-    required this.controller,
+    required this.availablePorts,
+    required this.selectedPort,
+    required this.isConnected,
+    required this.isConnecting,
+    required this.autoTrigger,
+    required this.triggerInterval,
+    required this.isLoading,
     required this.isLandscape,
+    required this.onRefreshPorts,
+    required this.onSetSelectedPort,
+    required this.onToggleConnection,
+    required this.onToggleAutoTrigger,
+    required this.onTriggerSample,
+    required this.onSetTriggerInterval,
+    required this.context,
+    required this.onShowConfig,
   });
 
   @override
@@ -36,18 +64,16 @@ class SerialControlPanel extends StatelessWidget {
         Expanded(
           child: DropdownButton<String>(
             isExpanded: true,
-            value: controller.selectedPort,
+            value: selectedPort,
             hint: const Text('选择串口'),
             onChanged:
-                controller.isConnected
+                isConnected
                     ? null
                     : (String? newValue) {
-                      controller.setSelectedPort(newValue);
+                      onSetSelectedPort(newValue);
                     },
             items:
-                controller.availablePorts.map<DropdownMenuItem<String>>((
-                  String value,
-                ) {
+                availablePorts.map<DropdownMenuItem<String>>((String value) {
                   return DropdownMenuItem<String>(
                     value: value,
                     child: Text(value),
@@ -58,11 +84,18 @@ class SerialControlPanel extends StatelessWidget {
         const SizedBox(width: 16),
         IconButton(
           icon: const Icon(Icons.refresh),
-          onPressed: controller.refreshPorts,
+          onPressed: onRefreshPorts,
           tooltip: '刷新串口列表',
         ),
         const SizedBox(width: 8),
-        if (controller.isConnecting)
+        // 添加配置按钮
+        IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: isConnecting ? null : onShowConfig,
+          tooltip: '串口配置',
+        ),
+        const SizedBox(width: 8),
+        if (isConnecting)
           const SizedBox(
             width: 24,
             height: 24,
@@ -70,15 +103,15 @@ class SerialControlPanel extends StatelessWidget {
           )
         else
           ElevatedButton(
-            onPressed: controller.toggleConnection,
-            child: Text(controller.isConnected ? '断开' : '连接'),
+            onPressed: onToggleConnection,
+            child: Text(isConnected ? '断开' : '连接'),
           ),
         const SizedBox(width: 16),
-        if (controller.isConnected)
+        if (isConnected)
           Expanded(
             child:
-                controller.autoTrigger
-                    ? _buildAutoTriggerControls()
+                autoTrigger
+                    ? _buildAutoTriggerControls(context)
                     : _buildManualTriggerControls(),
           ),
       ],
@@ -99,16 +132,16 @@ class SerialControlPanel extends StatelessWidget {
             Expanded(
               child: DropdownButton<String>(
                 isExpanded: true,
-                value: controller.selectedPort,
+                value: selectedPort,
                 hint: const Text('选择串口'),
                 onChanged:
-                    controller.isConnected
+                    isConnected
                         ? null
                         : (String? newValue) {
-                          controller.setSelectedPort(newValue);
+                          onSetSelectedPort(newValue);
                         },
                 items:
-                    controller.availablePorts.map<DropdownMenuItem<String>>((
+                    availablePorts.map<DropdownMenuItem<String>>((
                       String value,
                     ) {
                       return DropdownMenuItem<String>(
@@ -121,11 +154,18 @@ class SerialControlPanel extends StatelessWidget {
             const SizedBox(width: 8),
             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: controller.refreshPorts,
+              onPressed: onRefreshPorts,
               tooltip: '刷新串口列表',
             ),
             const SizedBox(width: 8),
-            if (controller.isConnecting)
+            // 添加配置按钮
+            IconButton(
+              icon: const Icon(Icons.settings),
+              onPressed: isConnecting ? null : onShowConfig,
+              tooltip: '串口配置',
+            ),
+            const SizedBox(width: 8),
+            if (isConnecting)
               const SizedBox(
                 width: 24,
                 height: 24,
@@ -133,20 +173,20 @@ class SerialControlPanel extends StatelessWidget {
               )
             else
               ElevatedButton(
-                onPressed: controller.toggleConnection,
-                child: Text(controller.isConnected ? '断开' : '连接'),
+                onPressed: onToggleConnection,
+                child: Text(isConnected ? '断开' : '连接'),
               ),
           ],
         ),
         const SizedBox(height: 8),
         // 第二行：触发控制
-        if (controller.isConnected)
+        if (isConnected)
           Row(
             children: [
               Expanded(
                 child:
-                    controller.autoTrigger
-                        ? _buildAutoTriggerControls()
+                    autoTrigger
+                        ? _buildAutoTriggerControls(context)
                         : _buildManualTriggerControls(),
               ),
             ],
@@ -156,23 +196,20 @@ class SerialControlPanel extends StatelessWidget {
   }
 
   // 构建自动触发控制区
-  Widget _buildAutoTriggerControls() {
+  Widget _buildAutoTriggerControls(BuildContext context) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        Text('自动触发: ${controller.triggerInterval} ms'),
+        Text('自动触发: $triggerInterval ms'),
         const SizedBox(width: 8),
-        Builder(
-          builder:
-              (context) => IconButton(
-                icon: const Icon(Icons.settings),
-                onPressed: () => _showIntervalDialog(context),
-                tooltip: '设置触发间隔',
-              ),
+        IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: () => _showIntervalDialog(context),
+          tooltip: '设置触发间隔',
         ),
         const SizedBox(width: 8),
         ElevatedButton(
-          onPressed: controller.toggleAutoTrigger,
+          onPressed: onToggleAutoTrigger,
           child: const Text('停止自动'),
         ),
       ],
@@ -185,14 +222,14 @@ class SerialControlPanel extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         ElevatedButton(
-          onPressed: controller.toggleAutoTrigger,
+          onPressed: onToggleAutoTrigger,
           child: const Text('启动自动'),
         ),
         const SizedBox(width: 16),
         ElevatedButton(
-          onPressed: controller.isLoading ? null : controller.triggerSample,
+          onPressed: isLoading ? null : onTriggerSample,
           child:
-              controller.isLoading
+              isLoading
                   ? const SizedBox(
                     width: 20,
                     height: 20,
@@ -207,7 +244,7 @@ class SerialControlPanel extends StatelessWidget {
   // 显示设置触发间隔的对话框
   void _showIntervalDialog(BuildContext context) {
     final textController = TextEditingController(
-      text: controller.triggerInterval.toString(),
+      text: triggerInterval.toString(),
     );
 
     showDialog(
@@ -220,7 +257,7 @@ class SerialControlPanel extends StatelessWidget {
             keyboardType: TextInputType.number,
             decoration: const InputDecoration(
               labelText: '触发间隔 (毫秒)',
-              hintText: '输入500-10000之间的值',
+              hintText: '输入200-10000之间的值',
             ),
           ),
           actions: [
@@ -233,8 +270,8 @@ class SerialControlPanel extends StatelessWidget {
             ElevatedButton(
               onPressed: () {
                 final value = int.tryParse(textController.text);
-                if (value != null && value >= 500 && value <= 10000) {
-                  controller.setTriggerInterval(value);
+                if (value != null && value >= 200 && value <= 10000) {
+                  onSetTriggerInterval(value);
                   Navigator.of(context).pop();
                 }
               },

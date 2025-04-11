@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
 import '../types/command.dart';
@@ -9,17 +8,29 @@ import '../types/adc_data_analysis.dart';
 class SerialConfig {
   String portName;
   int baudRate;
+  int dataBits;
+  int parity; // 修改为int类型，不再使用SerialPortParity枚举
+  int stopBits;
+  int flowControl; // 修改为int类型，不再使用SerialPortFlowControl枚举
   int timeoutMs;
 
   SerialConfig({
     required this.portName,
-    this.baudRate = 115200,
+    this.baudRate = 921600,
+    this.dataBits = 8,
+    this.parity = SerialPortParity.none,
+    this.stopBits = 1,
+    this.flowControl = SerialPortFlowControl.none,
     this.timeoutMs = 100,
   });
 
   SerialConfig.defaultConfig()
     : portName = "PortName",
-      baudRate = 115200,
+      baudRate = 921600,
+      dataBits = 8,
+      parity = SerialPortParity.none,
+      stopBits = 1,
+      flowControl = SerialPortFlowControl.none,
       timeoutMs = 100;
 }
 
@@ -42,12 +53,33 @@ class SerialApi {
   static SerialPortReader? _reader;
   static StreamSubscription? _subscription;
 
+  // 数据接收相关
+  static final StreamController<Uint8List> _dataStreamController =
+      StreamController<Uint8List>.broadcast();
+  static Stream<Uint8List> get dataStream => _dataStreamController.stream;
+
+  // 临时数据缓冲区
+  static final List<int> _buffer = [];
+
+  // 标记是否正在等待命令响应
+  static bool _waitingForResponse = false;
+  static Completer<CommandResponse>? _responseCompleter;
+
+  // 标记是否正在等待数据包
+  static bool _waitingForDataPacket = false;
+  static Completer<List<int>>? _dataPacketCompleter;
+
   /// 获取可用串口列表
-  static List<String> getAvailablePorts() {
-    List<String> ports = SerialPort.availablePorts;
-    ports = ports.toSet().toList();
-    ports.sort();
-    return ports;
+  static Future<List<String>> getAvailablePorts() async {
+    try {
+      final portsResult = await SerialPort.availablePorts;
+      final uniquePorts = portsResult.toSet().toList();
+      final ports = uniquePorts.toList();
+      ports.sort();
+      return ports;
+    } catch (e) {
+      throw '获取串口列表失败: $e';
+    }
   }
 
   /// 开启串口连接
@@ -58,41 +90,79 @@ class SerialApi {
     }
 
     try {
+      // 创建串口对象
       _port = SerialPort(config.portName);
 
-      // openReadWrite() 打开串口用于读写操作
-      if (!_port!.openReadWrite()) {
-        throw "无法打开串口进行读写操作";
+      // 打开串口
+      if (!await _port!.openReadWrite()) {
+        throw '无法打开串口进行读写操作';
       }
 
-      // 配置串口参数
-      var portConfig = _port!.config;
+      // 配置串口
+      final portConfig = SerialPortConfig();
       portConfig.baudRate = config.baudRate;
-      portConfig.bits = 8;
-      portConfig.parity = SerialPortParity.none;
-      portConfig.stopBits = 1;
-      portConfig.setFlowControl(SerialPortFlowControl.none);
+      portConfig.bits = config.dataBits;
+      portConfig.parity = config.parity; // 直接使用整数值
+      portConfig.stopBits = config.stopBits;
+      portConfig.setFlowControl(config.flowControl); // 直接使用整数值
 
       // 应用配置
-      _port!.config = portConfig;
+      await _port!.setConfig(portConfig);
+
+      // 创建读取器并订阅数据
+      _reader = SerialPortReader(_port!);
+      _subscription = _reader!.stream.listen(
+        _onDataReceived,
+        onError: (error) {
+          if (kDebugMode) {
+            print('数据接收错误: $error');
+          }
+          // 如果有正在等待响应的Completer，以错误结束它
+          if (_waitingForResponse &&
+              _responseCompleter != null &&
+              !_responseCompleter!.isCompleted) {
+            _responseCompleter!.completeError('数据接收错误: $error');
+          }
+          if (_waitingForDataPacket &&
+              _dataPacketCompleter != null &&
+              !_dataPacketCompleter!.isCompleted) {
+            _dataPacketCompleter!.completeError('数据接收错误: $error');
+          }
+        },
+      );
 
       // 设置为触发模式
       await setTriggerMode();
-
-      // 初始化读取器
-      _reader = SerialPortReader(_port!);
     } catch (e) {
       if (_port != null) {
-        _port!.close();
+        if (_port!.isOpen) {
+          await _port!.close();
+        }
         _port!.dispose();
         _port = null;
       }
-      throw "无法打开串口: $e";
+      throw '无法打开串口: $e';
     }
   }
 
   /// 停止串口连接
   static Future<void> stopSerial() async {
+    // 取消任何未完成的等待
+    if (_waitingForResponse &&
+        _responseCompleter != null &&
+        !_responseCompleter!.isCompleted) {
+      _responseCompleter!.completeError('串口已关闭');
+    }
+    if (_waitingForDataPacket &&
+        _dataPacketCompleter != null &&
+        !_dataPacketCompleter!.isCompleted) {
+      _dataPacketCompleter!.completeError('串口已关闭');
+    }
+
+    _waitingForResponse = false;
+    _waitingForDataPacket = false;
+    _buffer.clear();
+
     if (_subscription != null) {
       await _subscription!.cancel();
       _subscription = null;
@@ -104,11 +174,123 @@ class SerialApi {
 
     if (_port != null) {
       if (_port!.isOpen) {
-        _port!.close();
+        await _port!.close();
       }
       _port!.dispose();
       _port = null;
     }
+  }
+
+  /// 处理接收到的数据
+  static void _onDataReceived(Uint8List data) {
+    if (data.isEmpty) return;
+
+    // 添加到广播流
+    _dataStreamController.add(data);
+
+    // 添加到缓冲区
+    _buffer.addAll(data);
+
+    // 如果正在等待命令响应，尝试解析
+    if (_waitingForResponse &&
+        _responseCompleter != null &&
+        !_responseCompleter!.isCompleted) {
+      _tryParseCommandResponse();
+    }
+
+    // 如果正在等待数据包，尝试解析
+    if (_waitingForDataPacket &&
+        _dataPacketCompleter != null &&
+        !_dataPacketCompleter!.isCompleted) {
+      _tryParseDataPacket();
+    }
+  }
+
+  /// 尝试从缓冲区解析命令响应
+  static void _tryParseCommandResponse() {
+    // 命令响应包固定为8字节
+    if (_buffer.length >= SerialCommand.uartPacketSize) {
+      // 查找包头
+      int startIndex = -1;
+      for (int i = 0; i <= _buffer.length - SerialCommand.uartPacketSize; i++) {
+        if (_buffer[i] == SerialCommand.packetHeader &&
+            _buffer[i + SerialCommand.uartPacketSize - 1] ==
+                SerialCommand.packetFooter) {
+          startIndex = i;
+          break;
+        }
+      }
+
+      if (startIndex >= 0) {
+        // 提取响应包
+        final packet = _buffer.sublist(
+          startIndex,
+          startIndex + SerialCommand.uartPacketSize,
+        );
+
+        // 清除已使用的数据
+        _buffer.removeRange(0, startIndex + SerialCommand.uartPacketSize);
+
+        // 解析响应
+        final response = CommandResponse(
+          command: packet[1],
+          status: packet[2],
+          data: packet[3],
+        );
+
+        // 完成等待
+        _waitingForResponse = false;
+        _responseCompleter!.complete(response);
+      }
+    }
+  }
+
+  /// 尝试从缓冲区解析数据包
+  static void _tryParseDataPacket() {
+    // 首先查找包头序列
+    int headerIndex = _findSequence(_buffer, analysisPacketStart);
+    if (headerIndex >= 0) {
+      // 找到包头，现在查找包尾
+      int footerIndex = _findSequence(
+        _buffer,
+        analysisPacketEnd,
+        headerIndex + analysisPacketStart.length,
+      );
+
+      if (footerIndex >= 0) {
+        // 找到完整数据包
+        final dataPacket = _buffer.sublist(
+          headerIndex,
+          footerIndex + analysisPacketEnd.length,
+        );
+
+        // 清除已使用的数据
+        _buffer.removeRange(0, footerIndex + analysisPacketEnd.length);
+
+        // 完成等待
+        _waitingForDataPacket = false;
+        _dataPacketCompleter!.complete(dataPacket);
+      }
+    }
+  }
+
+  /// 在数组中查找序列
+  static int _findSequence(
+    List<int> array,
+    List<int> sequence, [
+    int startFrom = 0,
+  ]) {
+    for (int i = startFrom; i <= array.length - sequence.length; i++) {
+      bool found = true;
+      for (int j = 0; j < sequence.length; j++) {
+        if (array[i + j] != sequence[j]) {
+          found = false;
+          break;
+        }
+      }
+      if (found) return i;
+    }
+    return -1;
   }
 
   /// 更新串口配置
@@ -151,69 +333,42 @@ class SerialApi {
       throw "串口未连接";
     }
 
+    // 确保没有正在进行的命令
+    if (_waitingForResponse) {
+      throw "已有正在等待响应的命令";
+    }
+
+    // 准备等待响应
+    _responseCompleter = Completer<CommandResponse>();
+    _waitingForResponse = true;
+
     // 清空输入缓冲区
     _port!.flush(SerialPortBuffer.input);
+    _buffer.clear();
 
+    // 创建命令包
     final cmdPacket = _createCommandPacket(cmd, data);
 
-    // 发送命令 - 修改为正确的write方法调用
-    _port!.write(cmdPacket);
-
-    // 读取响应（8字节）
-    Uint8List response = Uint8List(0);
-    final startTime = DateTime.now();
-    final timeout = const Duration(seconds: 5);
-
-    // 循环读取数据直到获得完整的响应包
-    while (response.length < SerialCommand.uartPacketSize) {
-      if (DateTime.now().difference(startTime) > timeout) {
-        throw "等待响应超时";
+    try {
+      // 发送命令
+      final bytesWritten = await _port!.write(cmdPacket);
+      if (bytesWritten != cmdPacket.length) {
+        throw "发送命令失败：发送了 $bytesWritten 字节，应为 ${cmdPacket.length} 字节";
       }
 
-      try {
-        // 使用非阻塞方式读取剩余的字节
-        if (_port!.bytesAvailable > 0) {
-          final newBytes = _port!.read(
-            SerialCommand.uartPacketSize - response.length,
-          );
-
-          // 合并读取到的数据
-          if (newBytes.isNotEmpty) {
-            final temp = Uint8List(response.length + newBytes.length);
-            temp.setRange(0, response.length, response);
-            temp.setRange(response.length, temp.length, newBytes);
-            response = temp;
-          }
-        } else {
-          // 短暂延迟，避免CPU占用过高
-          await Future.delayed(const Duration(milliseconds: 5));
-        }
-      } catch (e) {
-        // 如果是超时错误，继续尝试
-        if (e.toString().contains("timeout")) {
-          continue;
-        }
-        throw "读取错误: $e";
-      }
+      // 设置超时
+      final timeout = const Duration(seconds: 5);
+      return await _responseCompleter!.future.timeout(
+        timeout,
+        onTimeout: () {
+          _waitingForResponse = false;
+          throw "等待响应超时";
+        },
+      );
+    } catch (e) {
+      _waitingForResponse = false;
+      throw "发送命令失败: $e";
     }
-
-    // 验证响应
-    if (response[0] != SerialCommand.packetHeader ||
-        response[SerialCommand.uartPacketSize - 1] !=
-            SerialCommand.packetFooter) {
-      throw "无效的响应包格式";
-    }
-
-    if (response[1] != cmd) {
-      throw "命令回显不匹配: 期望 0x${cmd.toRadixString(16).padLeft(2, '0')}, "
-          "收到 0x${response[1].toRadixString(16).padLeft(2, '0')}";
-    }
-
-    return CommandResponse(
-      command: response[1],
-      status: response[2],
-      data: response[3],
-    );
   }
 
   /// 触发一次采样并等待结果
@@ -232,122 +387,22 @@ class SerialApi {
       throw "触发请求返回未知状态: ${response.status}";
     }
 
-    // 寻找数据包头部
-    List<int> buffer = [];
-    bool headerFound = false;
-    int headerPos = 0;
-    final startTime = DateTime.now();
-    final timeout = const Duration(seconds: 5);
+    // 准备等待数据包
+    _dataPacketCompleter = Completer<List<int>>();
+    _waitingForDataPacket = true;
 
-    // libserialport 没有直接的超时配置方法，我们只能通过读取方式控制
     try {
-      // 读取直到找到包头
-      while (!headerFound) {
-        if (DateTime.now().difference(startTime) > timeout) {
-          throw "等待数据包头部超时";
-        }
-
-        if (_port!.bytesAvailable > 0) {
-          // 一次读取一个字节
-          final byte = _port!.read(1);
-
-          if (byte.isNotEmpty) {
-            buffer.add(byte[0]);
-
-            // 检查是否匹配包头序列
-            if (byte[0] == analysisPacketStart[headerPos]) {
-              headerPos++;
-              if (headerPos == analysisPacketStart.length) {
-                headerFound = true;
-              }
-            } else {
-              // 不匹配，重置位置
-              headerPos = 0;
-              // 如果当前字节匹配包头第一个字节，重新开始匹配
-              if (byte[0] == analysisPacketStart[0]) {
-                headerPos = 1;
-              }
-            }
-          }
-        } else {
-          await Future.delayed(const Duration(milliseconds: 5));
-        }
-
-        // 保持缓冲区大小合理
-        if (buffer.length > 1000 && !headerFound) {
-          buffer = buffer.sublist(buffer.length - 100);
-        }
-      }
-
-      // 修剪buffer，只保留包头及之后的数据
-      final headerStartIdx = buffer.length - analysisPacketStart.length;
-      buffer = buffer.sublist(headerStartIdx);
-
-      // 读取SAMPLE_SIZE和NUM_HARMONICS (3字节)
-      int bytesNeeded = 3;
-      final sizeStartTime = DateTime.now();
-
-      while (bytesNeeded > 0) {
-        if (DateTime.now().difference(sizeStartTime) > timeout) {
-          throw "读取大小参数超时";
-        }
-
-        if (_port!.bytesAvailable > 0) {
-          final newBytes = _port!.read(bytesNeeded);
-          if (newBytes.isNotEmpty) {
-            buffer.addAll(newBytes);
-            bytesNeeded -= newBytes.length;
-          }
-        } else {
-          await Future.delayed(const Duration(milliseconds: 5));
-        }
-      }
-
-      // 继续读取数据直到找到包尾
-      final longStartTime = DateTime.now();
-      bool footerFound = false;
-      int footerPos = 0;
-      final longTimeout = const Duration(seconds: 10);
-
-      while (!footerFound) {
-        if (DateTime.now().difference(longStartTime) > longTimeout) {
-          throw "读取数据超时";
-        }
-
-        if (_port!.bytesAvailable > 0) {
-          final temp = _port!.read(128); // 每次最多读取128字节
-
-          if (temp.isNotEmpty) {
-            // 添加到缓冲区
-            buffer.addAll(temp);
-
-            // 检查是否包含包尾序列的一部分
-            for (int i = 0; i < temp.length; i++) {
-              final currentByte = temp[i];
-              if (currentByte == analysisPacketEnd[footerPos]) {
-                footerPos++;
-                if (footerPos == analysisPacketEnd.length) {
-                  footerFound = true;
-                  break;
-                }
-              } else {
-                // 如果当前字节匹配包尾的第一个字节，重置为1
-                footerPos = (currentByte == analysisPacketEnd[0]) ? 1 : 0;
-              }
-            }
-          }
-        } else {
-          await Future.delayed(const Duration(milliseconds: 5));
-        }
-
-        // 防止无限循环占用内存
-        if (buffer.length > 1000000) {
-          throw "数据包过大，可能损坏";
-        }
-      }
-
-      return buffer;
+      // 设置超时
+      final timeout = const Duration(seconds: 10);
+      return await _dataPacketCompleter!.future.timeout(
+        timeout,
+        onTimeout: () {
+          _waitingForDataPacket = false;
+          throw "等待数据包超时";
+        },
+      );
     } catch (e) {
+      _waitingForDataPacket = false;
       throw "读取数据失败: $e";
     }
   }

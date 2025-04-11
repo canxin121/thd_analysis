@@ -28,7 +28,7 @@ class _AnalysisResultDisplayState extends State<AnalysisResultDisplay> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isWideLayout = constraints.maxWidth > 500;
+        final isWideLayout = constraints.maxWidth > 100;
         final content = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -75,12 +75,12 @@ class _AnalysisResultDisplayState extends State<AnalysisResultDisplay> {
     final infoItems = [
       _InfoItem(
         icon: Icons.analytics_outlined,
-        title: '总谐波失真 (THD)',
+        title: 'THD',
         value: '${result.thd.toStringAsFixed(2)}%',
       ),
       _InfoItem(
         icon: Icons.waves,
-        title: '波形类型',
+        title: '波形',
         value: getWaveformTypeName(result.waveform),
       ),
       _InfoItem(
